@@ -1,15 +1,78 @@
-########################################
-# IAM ROLE + POLICIES
-########################################
-resource "aws_iam_role" "this" {
-  name               = "${var.name_prefix}-ec2-role"
-  assume_role_policy = data.aws_iam_policy_document.ec2_trust.json
+resource "random_string" "prefix" {
+  length  = 8
+  special = false
+  upper   = false
+  numeric = true
 }
 
+locals {
+  name_prefix_use = coalesce(local.name_prefix_use, random_string.prefix.result)
+}
+
+#############################################################################
+# 1.  VPC & SUBNET SELECTION (never create, only look up)
+#############################################################################
+
+# Default VPC in this region
+data "aws_vpc" "default" {
+  default = true
+}
+
+# If the caller passed a subnet_id, look it up
+data "aws_subnet" "provided" {
+  count = var.subnet_id != null ? 1 : 0
+  id    = var.subnet_id
+}
+
+# Otherwise list default-VPC subnets and pick the first
+data "aws_subnet_ids" "default_vpc" {
+  count  = var.subnet_id == null ? 1 : 0
+  vpc_id = data.aws_vpc.default.id
+}
+
+locals {
+  subnet_id_use = var.subnet_id != null ? var.subnet_id : one(data.aws_subnet_ids.default_vpc[0].ids)
+  vpc_id_use    = var.subnet_id != null ? data.aws_subnet.provided[0].vpc_id : data.aws_vpc.default.id
+}
+
+
+
+#############################################################################
+# 2.  AMI  (auto-select Amazon Linux 2 unless overridden)
+#############################################################################
+data "aws_ami" "autosel" {
+  count       = var.ami_id == null ? 1 : 0
+  most_recent = true
+  owners      = var.ami_owners
+
+  filter {
+    name   = "name"
+    values = [var.ami_name_pattern]
+  }
+  filter {
+    name   = "architecture"
+    values = [var.ami_architecture]
+  }
+  filter {
+    name   = "root-device-type"
+    values = [var.ami_root_device_type]
+  }
+  filter {
+    name   = "virtualization-type"
+    values = [var.ami_virtualization_type]
+  }
+}
+
+locals {
+  ami_id_use = var.ami_id != null ? var.ami_id : one(data.aws_ami.autosel[*].id)
+}
+
+#############################################################################
+# 3.  IAM ROLE  (+ optional S3 policy)
+#############################################################################
 data "aws_iam_policy_document" "ec2_trust" {
   statement {
     actions = ["sts:AssumeRole"]
-
     principals {
       type        = "Service"
       identifiers = ["ec2.amazonaws.com"]
@@ -17,101 +80,94 @@ data "aws_iam_policy_document" "ec2_trust" {
   }
 }
 
+resource "aws_iam_role" "this" {
+  name               = "${local.name_prefix_use}-role"
+  assume_role_policy = data.aws_iam_policy_document.ec2_trust.json
+}
+
 resource "aws_iam_instance_profile" "this" {
-  name = "${var.name_prefix}-ec2-profile"
+  name = "${local.name_prefix_use}-profile"
   role = aws_iam_role.this.name
 }
 
-# Optional inline S3 policy
 data "aws_iam_policy_document" "s3_access" {
   count = var.enable_s3_integration ? 1 : 0
 
   statement {
-    actions   = ["s3:*"]
+    actions = ["s3:*"]
     resources = [
       "arn:aws:s3:::${var.s3_bucket_name}",
-      "arn:aws:s3:::${var.s3_bucket_name}/*"
+      "arn:aws:s3:::${var.s3_bucket_name}/*",
     ]
   }
 }
 
 resource "aws_iam_role_policy" "s3_access" {
   count  = var.enable_s3_integration ? 1 : 0
-  name   = "${var.name_prefix}-s3-access"
+  name   = "${local.name_prefix_use}-s3-access"
   role   = aws_iam_role.this.id
   policy = data.aws_iam_policy_document.s3_access[0].json
 }
 
-########################################
-# SECURITY GROUP
-########################################
+#############################################################################
+# 4.  SECURITY GROUP (+ SSH, app-port, RDS egress, allow-all egress)
+#############################################################################
 resource "aws_security_group" "this" {
-  name_prefix = "${var.name_prefix}-sg-"
-  description = "Security group for EC2 module ${var.name_prefix}"
-  vpc_id      = data.aws_subnet.selected.vpc_id
+  name_prefix = "${local.name_prefix_use}-sg-"
+  vpc_id      = local.vpc_id_use
 }
 
-# Inbound SSH
 resource "aws_security_group_rule" "ssh_in" {
   count             = length(var.ssh_cidr_blocks) > 0 ? 1 : 0
   type              = "ingress"
+  protocol          = "tcp"
   from_port         = 22
   to_port           = 22
-  protocol          = "tcp"
   cidr_blocks       = var.ssh_cidr_blocks
   security_group_id = aws_security_group.this.id
 }
 
-# Inbound app port (80 by default) – source controlled by ALB SG if provided
-resource "aws_security_group_rule" "alb_in" {
-  type              = "ingress"
-  from_port         = var.app_port
-  to_port           = var.app_port
-  protocol          = "tcp"
-  security_group_id = aws_security_group.this.id
-
+resource "aws_security_group_rule" "app_in" {
+  type                     = "ingress"
+  protocol                 = "tcp"
+  from_port                = var.app_port
+  to_port                  = var.app_port
+  security_group_id        = aws_security_group.this.id
   source_security_group_id = var.enable_alb_registration ? var.alb_security_group_id : null
   cidr_blocks              = var.enable_alb_registration ? [] : ["0.0.0.0/0"]
 }
 
-# Optional egress rule to RDS
 resource "aws_security_group_rule" "rds_egress" {
   count                    = var.enable_rds_integration ? 1 : 0
   type                     = "egress"
+  protocol                 = "-1"
   from_port                = 0
   to_port                  = 0
-  protocol                 = "-1"
   security_group_id        = aws_security_group.this.id
   source_security_group_id = var.rds_security_group_id
-  description              = "Allow outbound traffic to RDS SG"
 }
 
-# Default allow-all egress (for updates, OS, etc.)
 resource "aws_security_group_rule" "all_egress" {
   type              = "egress"
+  protocol          = "-1"
   from_port         = 0
   to_port           = 0
-  protocol          = "-1"
   cidr_blocks       = ["0.0.0.0/0"]
   security_group_id = aws_security_group.this.id
 }
 
-########################################
-# EC2 INSTANCE
-########################################
-data "aws_subnet" "selected" {
-  id = var.subnet_id
-}
-
+#############################################################################
+# 5.  EC2 INSTANCE
+#############################################################################
 resource "aws_instance" "this" {
-  ami                         = var.ami_id
-  instance_type               = var.instance_type
-  subnet_id                   = var.subnet_id
-  vpc_security_group_ids      = concat([aws_security_group.this.id], var.additional_security_group_ids)
-  iam_instance_profile        = aws_iam_instance_profile.this.name
+  ami                    = local.ami_id_use
+  instance_type          = var.instance_type
+  subnet_id              = local.subnet_id_use
+  vpc_security_group_ids = concat([aws_security_group.this.id], var.additional_security_group_ids)
+  iam_instance_profile   = aws_iam_instance_profile.this.name
 
   tags = {
-    Name = "${var.name_prefix}-ec2"
+    Name   = "${local.name_prefix_use}-ec2"
     Module = "aws-ec2-connectivity"
   }
 }

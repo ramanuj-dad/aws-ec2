@@ -1,14 +1,28 @@
-############################
-# GENERIC INSTANCE SETTINGS
-############################
-variable "name_prefix" {
-  description = "Name prefix applied to all resources"
+############################################
+# NETWORK
+############################################
+variable "subnet_id" {
+  description = <<-EOF
+    Existing subnet ID to launch the instance in.
+    Leave null to make the module automatically pick one of the default
+    subnets that AWS created in the default VPC for this region.
+  EOF
   type        = string
+  default     = null
 }
 
-variable "ami_id" {
-  description = "AMI to launch"
+
+
+############################################
+# INSTANCE BASICS
+############################################
+variable "name_prefix" {
   type        = string
+  description = <<-EOF
+    Optional prefix applied to all resource names.
+    If omitted, the module will generate an 8-character random string.
+ EOF
+  default     = null
 }
 
 variable "instance_type" {
@@ -17,70 +31,99 @@ variable "instance_type" {
   default     = "t3.micro"
 }
 
-variable "subnet_id" {
-  description = "Subnet in which to place the instance"
+############################################
+# AMI SELECTION (OPTIONAL OVERRIDE)
+############################################
+variable "ami_id" {
+  description = "Explicit AMI ID. If null, the module auto-selects an Amazon Linux 2 AMI."
   type        = string
+  default     = null
 }
 
-variable "additional_security_group_ids" {
-  description = "Extra SGs to attach in addition to the one this module creates"
-  type        = list(string)
-  default     = []
+variable "ami_name_pattern" {
+  type    = string
+  default = "amzn2-ami-hvm-*-x86_64-gp2"
 }
 
+variable "ami_architecture" {
+  type    = string
+  default = "x86_64"
+}
+
+variable "ami_root_device_type" {
+  type    = string
+  default = "ebs"
+}
+
+variable "ami_virtualization_type" {
+  type    = string
+  default = "hvm"
+}
+
+variable "ami_owners" {
+  type    = list(string)
+  default = ["137112412989"]
+}
+
+############################################
+# SECURITY GROUP OPTIONS
+############################################
 variable "ssh_cidr_blocks" {
-  description = "CIDR blocks allowed to SSH (port 22).  Set to [] to disable."
-  type        = list(string)
-  default     = ["0.0.0.0/0"]
+  type    = list(string)
+  default = ["0.0.0.0/0"]
 }
 
 variable "app_port" {
-  description = "Application port to allow from the ALB (or publicly if ALB integration is off)"
-  type        = number
-  default     = 80
+  type    = number
+  default = 80
 }
 
-############################
-# OPTIONAL RDS CONNECTIVITY
-############################
-variable "enable_rds_integration" {
-  description = "Whether to allow egress to an RDS SG and grant IAM DB auth"
-  type        = bool
-  default     = false
+variable "additional_security_group_ids" {
+  type    = list(string)
+  default = []
 }
 
-variable "rds_security_group_id" {
-  description = "RDS’s security-group ID. Required when enable_rds_integration = true."
-  type        = string
-  default     = null
-}
-
-############################
-# OPTIONAL S3 CONNECTIVITY
-############################
-variable "enable_s3_integration" {
-  description = "Whether to attach IAM permissions for the instance to access a bucket"
-  type        = bool
-  default     = false
-}
-
-variable "s3_bucket_name" {
-  description = "Name of the S3 bucket the instance should read/write. Required when enable_s3_integration = true."
-  type        = string
-  default     = null
-}
-
-############################
-# OPTIONAL ALB CONNECTIVITY
-############################
+############################################
+# OPTIONAL INTEGRATIONS
+############################################
 variable "enable_alb_registration" {
-  description = "Whether an external module will register this instance in its target group."
-  type        = bool
-  default     = false
+  type    = bool
+  default = false
 }
 
 variable "alb_security_group_id" {
-  description = "ALB security-group ID whose ingress to app_port should be allowed. Required when enable_alb_registration = true."
-  type        = string
-  default     = null
+  type    = string
+  default = null
+  validation {
+    condition     = var.enable_alb_registration == false || var.alb_security_group_id != null
+    error_message = "When enable_alb_registration=true you must supply alb_security_group_id."
+  }
+}
+
+variable "enable_rds_integration" {
+  type    = bool
+  default = false
+}
+
+variable "rds_security_group_id" {
+  type    = string
+  default = null
+  validation {
+    condition     = var.enable_rds_integration == false || var.rds_security_group_id != null
+    error_message = "When enable_rds_integration=true you must supply rds_security_group_id."
+  }
+}
+
+variable "enable_s3_integration" {
+  type    = bool
+  default = false
+}
+
+variable "s3_bucket_name" {
+  type    = string
+  default = null
+  validation {
+    condition     = var.enable_s3_integration == false || var.s3_bucket_name != null
+    error_message = "When enable_s3_integration=true you must supply s3_bucket_name."
+  }
 }
