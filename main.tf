@@ -1,3 +1,6 @@
+#############################################################################
+# Random name_prefix (8 chars) if the user omits var.name_prefix
+#############################################################################
 resource "random_string" "prefix" {
   length  = 8
   special = false
@@ -6,7 +9,7 @@ resource "random_string" "prefix" {
 }
 
 locals {
-  name_prefix_use = coalesce(local.name_prefix_use, random_string.prefix.result)
+  name_prefix_use = coalesce(var.name_prefix, random_string.prefix.result)
 }
 
 #############################################################################
@@ -24,18 +27,17 @@ data "aws_subnet" "provided" {
   id    = var.subnet_id
 }
 
-# Otherwise list default-VPC subnets and pick the first
-data "aws_subnet_ids" "default_vpc" {
-  count  = var.subnet_id == null ? 1 : 0
-  vpc_id = data.aws_vpc.default.id
+data "aws_subnets" "default_vpc" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
 }
 
 locals {
-  subnet_id_use = var.subnet_id != null ? var.subnet_id : one(data.aws_subnet_ids.default_vpc[0].ids)
+  subnet_id_use = var.subnet_id != null ? var.subnet_id : data.aws_subnets.default_vpc.ids[0]
   vpc_id_use    = var.subnet_id != null ? data.aws_subnet.provided[0].vpc_id : data.aws_vpc.default.id
 }
-
-
 
 #############################################################################
 # 2.  AMI  (auto-select Amazon Linux 2 unless overridden)
