@@ -1,5 +1,5 @@
 #############################################################################
-# Random name_prefix (8 chars) if the user omits var.name_prefix
+# 0. Random name_prefix if omitted
 #############################################################################
 resource "random_string" "prefix" {
   length  = 8
@@ -13,15 +13,12 @@ locals {
 }
 
 #############################################################################
-# 1.  VPC & SUBNET SELECTION (never create, only look up)
+# 1. VPC & SUBNET LOOKUP
 #############################################################################
-
-# Default VPC in this region
 data "aws_vpc" "default" {
   default = true
 }
 
-# If the caller passed a subnet_id, look it up
 data "aws_subnet" "provided" {
   count = var.subnet_id != null ? 1 : 0
   id    = var.subnet_id
@@ -40,7 +37,7 @@ locals {
 }
 
 #############################################################################
-# 2.  AMI  (auto-select Amazon Linux 2 unless overridden)
+# 2. AMI SELECTION
 #############################################################################
 data "aws_ami" "autosel" {
   count       = var.ami_id == null ? 1 : 0
@@ -66,11 +63,11 @@ data "aws_ami" "autosel" {
 }
 
 locals {
-  ami_id_use = var.ami_id != null ? var.ami_id : one(data.aws_ami.autosel[*].id)
+  ami_id_use = var.ami_id != null ? var.ami_id : data.aws_ami.autosel[0].id
 }
 
 #############################################################################
-# 3.  IAM ROLE  (+ optional S3 policy)
+# 3. IAM ROLE & S3 POLICY
 #############################################################################
 data "aws_iam_policy_document" "ec2_trust" {
   statement {
@@ -112,7 +109,7 @@ resource "aws_iam_role_policy" "s3_access" {
 }
 
 #############################################################################
-# 4.  SECURITY GROUP (+ SSH, app-port, RDS egress, allow-all egress)
+# 4. SECURITY GROUP
 #############################################################################
 resource "aws_security_group" "this" {
   name_prefix = "${local.name_prefix_use}-sg-"
@@ -159,7 +156,7 @@ resource "aws_security_group_rule" "all_egress" {
 }
 
 #############################################################################
-# 5.  EC2 INSTANCE
+# 5. EC2 INSTANCE
 #############################################################################
 resource "aws_instance" "this" {
   ami                    = local.ami_id_use
@@ -170,6 +167,6 @@ resource "aws_instance" "this" {
 
   tags = {
     Name   = "${local.name_prefix_use}-ec2"
-    Module = "aws-ec2-connectivity"
+    Module = "terraform-aws-ec2"
   }
 }
